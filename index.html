@@ -258,10 +258,23 @@ input[type=range]::-moz-range-thumb{
           <span id="bgr-thumb" style="position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .2s;pointer-events:none"></span>
         </div>
         <div>
-          <div style="font-size:12px;font-weight:700;color:#fff">Remove background <span style="font-size:9px;font-weight:600;color:var(--hot);background:rgba(255,63,164,.15);padding:2px 6px;border-radius:4px;margin-left:4px">BETA</span></div>
-          <div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:1px">AI-style flood fill · removes any colour background</div>
+          <div style="font-size:12px;font-weight:700;color:#fff">Remove solid background <span style="font-size:9px;font-weight:600;color:var(--hot);background:rgba(255,63,164,.15);padding:2px 6px;border-radius:4px;margin-left:4px">BETA</span></div>
+          <div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:1px">Flood fill · best for solid/simple backgrounds</div>
         </div>
       </label>
+      <a href="https://www.remove.bg" target="_blank" rel="noopener" style="
+        display:flex;align-items:center;gap:8px;margin-top:8px;
+        padding:9px 12px;border-radius:9px;
+        background:rgba(255,255,255,.05);border:1px dashed rgba(255,255,255,.18);
+        text-decoration:none;transition:background .15s;
+      " onmouseover="this.style.background='rgba(255,255,255,.12)'" onmouseout="this.style.background='rgba(255,255,255,.05)'">
+        <span style="font-size:18px">🤖</span>
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#fff">Need AI background removal?</div>
+          <div style="font-size:10px;color:rgba(255,255,255,.4)">Use remove.bg for complex subjects → re-upload here</div>
+        </div>
+        <span style="margin-left:auto;font-size:10px;color:var(--hot);font-weight:700">↗ Open</span>
+      </a>
     </div>
 
     <div class="divider"></div>
@@ -270,7 +283,7 @@ input[type=range]::-moz-range-thumb{
     <div>
       <p class="lbl">2 — Position &amp; Size</p>
       <div class="sliders">
-        <div class="sr"><label>Size <span id="sv">60%</span></label><input type="range" id="ss" min="5" max="110" value="60"/></div>
+        <div class="sr"><label>Size <span id="sv">60%</span></label><input type="range" id="ss" min="5" max="200" value="60"/></div>
         <div class="sr"><label>Horizontal <span id="xv">50%</span></label><input type="range" id="xs" min="0" max="100" value="50"/></div>
         <div class="sr"><label>Vertical <span id="yv">50%</span></label><input type="range" id="ys" min="0" max="100" value="50"/></div>
         <div class="sr"><label>Opacity <span id="ov">100%</span></label><input type="range" id="os" min="5" max="100" value="100"/></div>
@@ -367,235 +380,235 @@ bg.src=`data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDA
 const ss=document.getElementById('ss'),xs=document.getElementById('xs');
 const ys=document.getElementById('ys'),os=document.getElementById('os');
 
+// Offscreen canvas for logo compositing
+const logoCanvas = document.createElement('canvas');
+logoCanvas.width = W; logoCanvas.height = H;
+const lctx = logoCanvas.getContext('2d');
+
 // ── Eraser state ──
-// We keep an offscreen "logo canvas" that we paint erases onto.
-// The main canvas composites: bg + erased-logo.
-const logoCanvas=document.createElement('canvas');
-logoCanvas.width=W;logoCanvas.height=H;
-const lctx=logoCanvas.getContext('2d');
+// Strokes are stored as arrays of {x, y} in NORMALISED canvas coords (0–1).
+// Every draw() replays all strokes onto the mask at the logo's current
+// position/scale, so resizing/repositioning always stays in sync.
 
-let eraseHistory=[]; // stack of ImageData snapshots
-let eraseRedo=[];
-let isErasing=false;
-let eraserActive=false;
-let lastEX=-1,lastEY=-1;
+const maskCanvas = document.createElement('canvas');
+maskCanvas.width = W; maskCanvas.height = H;
+const mctx = maskCanvas.getContext('2d');
 
-function syncLogoCanvas(){
-  // Redraw the logo onto the offscreen canvas (called when logo changes or sliders move)
-  lctx.clearRect(0,0,W,H);
-  if(logoImg){
-    const sz=+ss.value/100,xp=+xs.value/100,yp=+ys.value/100,op=+os.value/100;
-    const md=W*sz;
-    const sc=Math.min(md/logoImg.naturalWidth,md/logoImg.naturalHeight);
-    const dw=logoImg.naturalWidth*sc,dh=logoImg.naturalHeight*sc;
-    lctx.save();lctx.globalAlpha=op;
-    lctx.drawImage(logoImg,xp*W-dw/2,yp*H-dh/2,dw,dh);
-    lctx.restore();
-  }
-  // Re-apply all erases from history (last state)
-  if(eraseHistory.length>0){
-    lctx.putImageData(eraseHistory[eraseHistory.length-1],0,0);
+// Each stroke = { radius: px, points: [{x,y}…] }  — x,y in 0–1 canvas space
+let strokes    = [];   // committed strokes
+let liveStroke = null; // stroke currently being drawn
+let undoStack  = [];   // snapshots of strokes[] for undo
+let redoStack  = [];
+
+let isErasing    = false;
+let eraserActive = false;
+let lastEX = -1, lastEY = -1;
+
+// Overlay canvas — cursor ring only, no mask data
+const eo    = document.getElementById('erase-overlay');
+const eoctx = eo.getContext('2d');
+eo.width = W; eo.height = H;
+
+// ── Helpers ──
+function eraserRadius() { return parseInt(document.getElementById('esize').value) / 2; }
+
+function toCanvasXY(e) {
+  const rect = canvas.getBoundingClientRect();
+  const src  = e.touches ? e.touches[0] : e;
+  return [(src.clientX - rect.left) * (W / rect.width),
+          (src.clientY - rect.top)  * (H / rect.height)];
+}
+
+function showCursor(cx, cy, r) {
+  eoctx.clearRect(0, 0, W, H);
+  eoctx.beginPath(); eoctx.arc(cx, cy, r, 0, Math.PI * 2);
+  eoctx.strokeStyle = 'rgba(0,0,0,0.5)'; eoctx.lineWidth = 4; eoctx.stroke();
+  eoctx.beginPath(); eoctx.arc(cx, cy, r, 0, Math.PI * 2);
+  eoctx.strokeStyle = 'rgba(255,255,255,0.9)'; eoctx.lineWidth = 2; eoctx.stroke();
+}
+
+// ── Replay all strokes → maskCanvas ──
+// Each point is in 0–1 canvas space; convert back to absolute px for painting.
+function replayMask() {
+  mctx.clearRect(0, 0, W, H);
+  const allStrokes = liveStroke ? [...strokes, liveStroke] : strokes;
+  for (const stroke of allStrokes) {
+    for (const pt of stroke.points) {
+      const cx = pt.x * W, cy = pt.y * H;
+      const r  = stroke.radius;
+      const grd = mctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      grd.addColorStop(0,   'rgba(0,0,0,1)');
+      grd.addColorStop(0.6, 'rgba(0,0,0,0.85)');
+      grd.addColorStop(1,   'rgba(0,0,0,0)');
+      mctx.fillStyle = grd;
+      mctx.beginPath(); mctx.arc(cx, cy, r, 0, Math.PI * 2); mctx.fill();
+    }
   }
 }
 
-function draw(){
-  // Background
-  if(bgImg){
-    const bw=bgImg.naturalWidth,bh=bgImg.naturalHeight;
-    const sc=Math.max(W/bw,H/bh);
-    ctx.drawImage(bgImg,(W-bw*sc)/2,(H-bh*sc)/2,bw*sc,bh*sc);
-  }else{
-    const g=ctx.createLinearGradient(0,0,W,H);
-    g.addColorStop(0,'#3a3cd6');g.addColorStop(.5,'#8b2fc9');g.addColorStop(1,'#e8176f');
-    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+// ── Logo + mask composite ──
+function drawLogoWithMask() {
+  lctx.clearRect(0, 0, W, H);
+  if (!logoImg) return;
+  const sz = +ss.value / 100, xp = +xs.value / 100;
+  const yp = +ys.value / 100, op = +os.value / 100;
+  const md = W * sz;
+  const sc = Math.min(md / logoImg.naturalWidth, md / logoImg.naturalHeight);
+  const dw = logoImg.naturalWidth * sc, dh = logoImg.naturalHeight * sc;
+  lctx.save(); lctx.globalAlpha = op;
+  lctx.drawImage(logoImg, xp * W - dw / 2, yp * H - dh / 2, dw, dh);
+  lctx.restore();
+  // Knock out erased areas
+  replayMask();
+  lctx.save();
+  lctx.globalCompositeOperation = 'destination-out';
+  lctx.drawImage(maskCanvas, 0, 0);
+  lctx.restore();
+}
+
+function draw() {
+  if (bgImg) {
+    const bw = bgImg.naturalWidth, bh = bgImg.naturalHeight;
+    const sc = Math.max(W / bw, H / bh);
+    ctx.drawImage(bgImg, (W - bw * sc) / 2, (H - bh * sc) / 2, bw * sc, bh * sc);
+  } else {
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#3a3cd6'); g.addColorStop(.5, '#8b2fc9'); g.addColorStop(1, '#e8176f');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   }
-  // Logo from offscreen (with erases baked in)
-  if(logoImg){
-    syncLogoCanvas();
-    ctx.drawImage(logoCanvas,0,0);
-  }
+  if (logoImg) { drawLogoWithMask(); ctx.drawImage(logoCanvas, 0, 0); }
 }
 
-// ── Eraser overlay canvas (visual cursor feedback) ──
-const eo=document.getElementById('erase-overlay');
-const eoctx=eo.getContext('2d');
-eo.width=W;eo.height=H;
-
-function showCursor(cx,cy,r){
-  eoctx.clearRect(0,0,W,H);
-  eoctx.beginPath();
-  eoctx.arc(cx,cy,r,0,Math.PI*2);
-  eoctx.strokeStyle='rgba(255,255,255,0.8)';
-  eoctx.lineWidth=2;
-  eoctx.stroke();
-  eoctx.beginPath();
-  eoctx.arc(cx,cy,r,0,Math.PI*2);
-  eoctx.strokeStyle='rgba(0,0,0,0.4)';
-  eoctx.lineWidth=4;
-  eoctx.stroke();
+// ── Undo / Redo helpers ──
+function updateUndoRedo() {
+  document.getElementById('undo-btn').disabled = undoStack.length === 0;
+  document.getElementById('redo-btn').disabled = redoStack.length === 0;
 }
 
-// Convert mouse/touch coords to canvas coords
-function toCanvasXY(e){
-  const rect=canvas.getBoundingClientRect();
-  const scaleX=W/rect.width,scaleY=H/rect.height;
-  const src=e.touches?e.touches[0]:e;
-  return[(src.clientX-rect.left)*scaleX,(src.clientY-rect.top)*scaleY];
-}
-
-function eraserRadius(){return parseInt(document.getElementById('esize').value)/2;}
-
-function saveEraseState(){
-  const snap=lctx.getImageData(0,0,W,H);
-  eraseHistory.push(snap);
-  eraseRedo=[];
+function snapshotForUndo() {
+  undoStack.push(strokes.map(s => ({ radius: s.radius, points: [...s.points] })));
+  redoStack = [];
   updateUndoRedo();
 }
 
-function updateUndoRedo(){
-  document.getElementById('undo-btn').disabled=eraseHistory.length<=1;
-  document.getElementById('redo-btn').disabled=eraseRedo.length===0;
+// ── Stroke lifecycle ──
+function startStroke(cx, cy) {
+  snapshotForUndo();
+  liveStroke = { radius: eraserRadius(), points: [{ x: cx / W, y: cy / H }] };
+  draw();
 }
 
-function doErase(cx,cy){
-  const r=eraserRadius();
-  // Erase on logo canvas using destination-out
-  lctx.save();
-  lctx.globalCompositeOperation='destination-out';
-  // Soft brush: radial gradient for feathered erase
-  const grd=lctx.createRadialGradient(cx,cy,0,cx,cy,r);
-  grd.addColorStop(0,'rgba(0,0,0,1)');
-  grd.addColorStop(0.6,'rgba(0,0,0,0.8)');
-  grd.addColorStop(1,'rgba(0,0,0,0)');
-  lctx.fillStyle=grd;
-  lctx.beginPath();lctx.arc(cx,cy,r,0,Math.PI*2);lctx.fill();
-  lctx.restore();
-  // Composite onto main canvas
-  ctx.save();
-  if(bgImg){
-    const bw=bgImg.naturalWidth,bh=bgImg.naturalHeight;
-    const sc=Math.max(W/bw,H/bh);
-    ctx.drawImage(bgImg,(W-bw*sc)/2,(H-bh*sc)/2,bw*sc,bh*sc);
-  }else{
-    const g=ctx.createLinearGradient(0,0,W,H);
-    g.addColorStop(0,'#3a3cd6');g.addColorStop(.5,'#8b2fc9');g.addColorStop(1,'#e8176f');
-    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+function continueStroke(cx, cy) {
+  if (!liveStroke) return;
+  const dx = cx - lastEX, dy = cy - lastEY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const r    = liveStroke.radius;
+  const steps = Math.max(1, Math.floor(dist / (r * 0.25)));
+  for (let i = 1; i <= steps; i++) {
+    liveStroke.points.push({
+      x: (lastEX + dx * (i / steps)) / W,
+      y: (lastEY + dy * (i / steps)) / H
+    });
   }
-  ctx.drawImage(logoCanvas,0,0);
-  ctx.restore();
+  draw();
 }
 
-// Mouse events
-canvas.addEventListener('mousedown',e=>{
-  if(!eraserActive||!logoImg) return;
-  isErasing=true;
-  // Save state BEFORE this stroke
-  if(eraseHistory.length===0) eraseHistory.push(lctx.getImageData(0,0,W,H));
-  const [cx,cy]=toCanvasXY(e);
-  doErase(cx,cy);lastEX=cx;lastEY=cy;
-});
-canvas.addEventListener('mousemove',e=>{
-  if(!eraserActive||!logoImg) return;
-  const [cx,cy]=toCanvasXY(e);
-  showCursor(cx,cy,eraserRadius());
-  if(!isErasing) return;
-  // Interpolate between last and current point for smooth stroke
-  const dx=cx-lastEX,dy=cy-lastEY;
-  const dist=Math.sqrt(dx*dx+dy*dy);
-  const r=eraserRadius();
-  const steps=Math.max(1,Math.floor(dist/(r*0.3)));
-  for(let i=1;i<=steps;i++){
-    doErase(lastEX+dx*(i/steps),lastEY+dy*(i/steps));
-  }
-  lastEX=cx;lastEY=cy;
-});
-canvas.addEventListener('mouseup',()=>{
-  if(!isErasing) return;
-  isErasing=false;
-  saveEraseState();
-});
-canvas.addEventListener('mouseleave',()=>{
-  eoctx.clearRect(0,0,W,H);
-  if(isErasing){isErasing=false;saveEraseState();}
-});
+function endStroke() {
+  if (liveStroke) { strokes.push(liveStroke); liveStroke = null; }
+  isErasing = false;
+  draw();
+}
 
-// Touch events
-canvas.addEventListener('touchstart',e=>{
-  if(!eraserActive||!logoImg) return;
+// ── Mouse events ──
+canvas.addEventListener('mousedown', e => {
+  if (!eraserActive || !logoImg) return;
+  isErasing = true;
+  const [cx, cy] = toCanvasXY(e);
+  startStroke(cx, cy);
+  lastEX = cx; lastEY = cy;
+});
+canvas.addEventListener('mousemove', e => {
+  if (!eraserActive || !logoImg) return;
+  const [cx, cy] = toCanvasXY(e);
+  showCursor(cx, cy, eraserRadius());
+  if (!isErasing) return;
+  continueStroke(cx, cy);
+  lastEX = cx; lastEY = cy;
+});
+canvas.addEventListener('mouseup',    () => { if (isErasing) endStroke(); });
+canvas.addEventListener('mouseleave', () => { eoctx.clearRect(0,0,W,H); if (isErasing) endStroke(); });
+
+// ── Touch events ──
+canvas.addEventListener('touchstart', e => {
+  if (!eraserActive || !logoImg) return;
   e.preventDefault();
-  isErasing=true;
-  if(eraseHistory.length===0) eraseHistory.push(lctx.getImageData(0,0,W,H));
-  const [cx,cy]=toCanvasXY(e);
-  doErase(cx,cy);lastEX=cx;lastEY=cy;
-},{passive:false});
-canvas.addEventListener('touchmove',e=>{
-  if(!eraserActive||!logoImg||!isErasing) return;
+  isErasing = true;
+  const [cx, cy] = toCanvasXY(e);
+  startStroke(cx, cy);
+  lastEX = cx; lastEY = cy;
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  if (!eraserActive || !logoImg || !isErasing) return;
   e.preventDefault();
-  const [cx,cy]=toCanvasXY(e);
-  showCursor(cx,cy,eraserRadius());
-  const dx=cx-lastEX,dy=cy-lastEY;
-  const dist=Math.sqrt(dx*dx+dy*dy);
-  const r=eraserRadius();
-  const steps=Math.max(1,Math.floor(dist/(r*0.3)));
-  for(let i=1;i<=steps;i++) doErase(lastEX+dx*(i/steps),lastEY+dy*(i/steps));
-  lastEX=cx;lastEY=cy;
-},{passive:false});
-canvas.addEventListener('touchend',()=>{
-  if(!isErasing) return;
-  isErasing=false;saveEraseState();
-  eoctx.clearRect(0,0,W,H);
+  const [cx, cy] = toCanvasXY(e);
+  showCursor(cx, cy, eraserRadius());
+  continueStroke(cx, cy);
+  lastEX = cx; lastEY = cy;
+}, { passive: false });
+canvas.addEventListener('touchend', () => {
+  eoctx.clearRect(0, 0, W, H);
+  if (isErasing) endStroke();
 });
 
-// Erase toggle button
-document.getElementById('erase-btn').addEventListener('click',()=>{
-  eraserActive=!eraserActive;
-  const btn=document.getElementById('erase-btn');
-  const bar=document.getElementById('eraser-bar');
-  btn.textContent=eraserActive?'✏️  Eraser ON — Click to Disable':'✏️  Enable Eraser';
-  btn.classList.toggle('erasing',eraserActive);
-  bar.classList.toggle('active',eraserActive);
-  eo.style.opacity=eraserActive?'1':'0';
-  eo.style.pointerEvents=eraserActive?'none':'none';
-  canvas.classList.toggle('erasing',eraserActive);
-  if(!eraserActive) eoctx.clearRect(0,0,W,H);
+// ── Eraser toggle ──
+document.getElementById('erase-btn').addEventListener('click', () => {
+  eraserActive = !eraserActive;
+  const btn = document.getElementById('erase-btn');
+  const bar = document.getElementById('eraser-bar');
+  btn.textContent = eraserActive ? '✏️  Eraser ON — Click to Disable' : '✏️  Enable Eraser';
+  btn.classList.toggle('erasing', eraserActive);
+  bar.classList.toggle('active', eraserActive);
+  eo.style.opacity = eraserActive ? '1' : '0';
+  eo.style.pointerEvents = 'none';
+  canvas.classList.toggle('erasing', eraserActive);
+  if (!eraserActive) eoctx.clearRect(0, 0, W, H);
 });
 
-// Brush size label
-document.getElementById('esize').addEventListener('input',function(){
-  document.getElementById('esv').textContent=this.value+'px';
+// ── Brush size label ──
+document.getElementById('esize').addEventListener('input', function () {
+  document.getElementById('esv').textContent = this.value + 'px';
 });
 
-// Undo
-document.getElementById('undo-btn').addEventListener('click',()=>{
-  if(eraseHistory.length<=1) return;
-  eraseRedo.push(eraseHistory.pop());
-  const prev=eraseHistory[eraseHistory.length-1];
-  lctx.putImageData(prev,0,0);
-  draw();updateUndoRedo();
+// ── Undo ──
+document.getElementById('undo-btn').addEventListener('click', () => {
+  if (!undoStack.length) return;
+  redoStack.push(strokes.map(s => ({ radius: s.radius, points: [...s.points] })));
+  strokes = undoStack.pop();
+  liveStroke = null;
+  draw(); updateUndoRedo();
 });
 
-// Redo
-document.getElementById('redo-btn').addEventListener('click',()=>{
-  if(!eraseRedo.length) return;
-  const next=eraseRedo.pop();
-  eraseHistory.push(next);
-  lctx.putImageData(next,0,0);
-  draw();updateUndoRedo();
+// ── Redo ──
+document.getElementById('redo-btn').addEventListener('click', () => {
+  if (!redoStack.length) return;
+  undoStack.push(strokes.map(s => ({ radius: s.radius, points: [...s.points] })));
+  strokes = redoStack.pop();
+  liveStroke = null;
+  draw(); updateUndoRedo();
 });
 
-// Clear all erases
-document.getElementById('clear-erase-btn').addEventListener('click',()=>{
-  eraseHistory=[];eraseRedo=[];
-  syncLogoCanvas(); // fresh logo without any erases
-  // rebuild history with the fresh state
-  eraseHistory.push(lctx.getImageData(0,0,W,H));
-  draw();updateUndoRedo();
+// ── Clear all erases ──
+document.getElementById('clear-erase-btn').addEventListener('click', () => {
+  snapshotForUndo();
+  strokes = []; liveStroke = null;
+  mctx.clearRect(0, 0, W, H);
+  draw(); updateUndoRedo();
 });
 
-// Keyboard shortcuts
-document.addEventListener('keydown',e=>{
-  if(e.ctrlKey&&e.key==='z'){e.preventDefault();document.getElementById('undo-btn').click();}
-  if(e.ctrlKey&&(e.key==='y'||(e.shiftKey&&e.key==='Z'))){e.preventDefault();document.getElementById('redo-btn').click();}
+// ── Keyboard shortcuts ──
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); document.getElementById('undo-btn').click(); }
+  if (e.ctrlKey && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); document.getElementById('redo-btn').click(); }
 });
 
 // Upload
@@ -624,11 +637,10 @@ function load(file){
   // Show bg-remove toggle for non-PNG files (jpeg/jpg/webp/bmp)
   const isPng=file.type==='image/png'||file.name.toLowerCase().endsWith('.png');
   bgrWrap.style.display='block';
-  // Always offer the toggle; auto-enable for non-PNG
-  const autoOn = !isPng;
-  bgrToggle.checked=autoOn;
-  bgrTrack.style.background=autoOn?'#ff3fa4':'rgba(255,255,255,.15)';
-  bgrThumb.style.transform=autoOn?'translateX(16px)':'translateX(0)';
+  // Toggle always OFF by default — user opts in
+  bgrToggle.checked=false;
+  bgrTrack.style.background='rgba(255,255,255,.15)';
+  bgrThumb.style.transform='translateX(0)';
   const url=URL.createObjectURL(file);
   const img=new Image();
   img.onload=()=>{
@@ -778,8 +790,9 @@ document.getElementById('rb').addEventListener('click',()=>{
   document.getElementById('eb').disabled=true;
   document.getElementById('cb').disabled=true;
   rawLogoImg=null;
-  eraseHistory=[];eraseRedo=[];
+  strokes=[];liveStroke=null;undoStack=[];redoStack=[];
   lctx.clearRect(0,0,W,H);
+  mctx.clearRect(0,0,W,H);
   eraserActive=false;
   document.getElementById('erase-btn').textContent='✏️  Enable Eraser';
   document.getElementById('erase-btn').classList.remove('erasing');
