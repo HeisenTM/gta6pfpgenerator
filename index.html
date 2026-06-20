@@ -386,30 +386,30 @@ logoCanvas.width = W; logoCanvas.height = H;
 const lctx = logoCanvas.getContext('2d');
 
 // ── Eraser state ──
-// Strokes are stored as arrays of {x, y} in NORMALISED canvas coords (0–1).
-// Every draw() replays all strokes onto the mask at the logo's current
-// position/scale, so resizing/repositioning always stays in sync.
+// Strokes are stored in LOGO-LOCAL space: x,y are 0–1 fractions of the logo's
+// own bounding box (not the canvas), and radius is also a fraction of logo
+// width. On every draw() we re-project these into canvas pixels using the
+// logo's CURRENT size/position — so erased holes scale and move WITH the
+// logo when you drag the sliders, instead of staying glued to the canvas.
 
 const maskCanvas = document.createElement('canvas');
 maskCanvas.width = W; maskCanvas.height = H;
 const mctx = maskCanvas.getContext('2d');
 
-// Each stroke = { radius: px, points: [{x,y}…] }  — x,y in 0–1 canvas space
+// Each stroke = { points: [{lx,ly}…], r: fraction-of-logo-width }
 let strokes    = [];   // committed strokes
 let liveStroke = null; // stroke currently being drawn
-let undoStack  = [];   // snapshots of strokes[] for undo
+let undoStack  = [];
 let redoStack  = [];
 
 let isErasing    = false;
 let eraserActive = false;
 let lastEX = -1, lastEY = -1;
 
-// Overlay canvas — cursor ring only, no mask data
 const eo    = document.getElementById('erase-overlay');
 const eoctx = eo.getContext('2d');
 eo.width = W; eo.height = H;
 
-// ── Helpers ──
 function eraserRadius() { return parseInt(document.getElementById('esize').value) / 2; }
 
 function toCanvasXY(e) {
@@ -427,21 +427,45 @@ function showCursor(cx, cy, r) {
   eoctx.strokeStyle = 'rgba(255,255,255,0.9)'; eoctx.lineWidth = 2; eoctx.stroke();
 }
 
-// ── Replay all strokes → maskCanvas ──
-// Each point is in 0–1 canvas space; convert back to absolute px for painting.
+// ── Current logo placement (px on canvas) ──
+function logoRect() {
+  if (!logoImg) return null;
+  const sz = +ss.value / 100, xp = +xs.value / 100, yp = +ys.value / 100;
+  const md = W * sz;
+  const sc = Math.min(md / logoImg.naturalWidth, md / logoImg.naturalHeight);
+  const dw = logoImg.naturalWidth * sc, dh = logoImg.naturalHeight * sc;
+  return { x: xp * W - dw / 2, y: yp * H - dh / 2, w: dw, h: dh };
+}
+
+// Canvas px → logo-local fraction (0–1 within logo's own box)
+function canvasToLogoLocal(cx, cy) {
+  const rect = logoRect();
+  if (!rect) return null;
+  return { lx: (cx - rect.x) / rect.w, ly: (cy - rect.y) / rect.h };
+}
+
+// Logo-local fraction → canvas px (using CURRENT logo rect)
+function logoLocalToCanvas(lx, ly) {
+  const rect = logoRect();
+  return { x: rect.x + lx * rect.w, y: rect.y + ly * rect.h };
+}
+
+// ── Replay all strokes → maskCanvas, re-projected at current logo size/pos ──
 function replayMask() {
   mctx.clearRect(0, 0, W, H);
+  const rect = logoRect();
+  if (!rect) return;
   const allStrokes = liveStroke ? [...strokes, liveStroke] : strokes;
   for (const stroke of allStrokes) {
+    const rPx = stroke.r * rect.w; // radius scales with current logo width
     for (const pt of stroke.points) {
-      const cx = pt.x * W, cy = pt.y * H;
-      const r  = stroke.radius;
-      const grd = mctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      const { x: cx, y: cy } = logoLocalToCanvas(pt.lx, pt.ly);
+      const grd = mctx.createRadialGradient(cx, cy, 0, cx, cy, rPx);
       grd.addColorStop(0,   'rgba(0,0,0,1)');
       grd.addColorStop(0.6, 'rgba(0,0,0,0.85)');
       grd.addColorStop(1,   'rgba(0,0,0,0)');
       mctx.fillStyle = grd;
-      mctx.beginPath(); mctx.arc(cx, cy, r, 0, Math.PI * 2); mctx.fill();
+      mctx.beginPath(); mctx.arc(cx, cy, rPx, 0, Math.PI * 2); mctx.fill();
     }
   }
 }
@@ -450,15 +474,11 @@ function replayMask() {
 function drawLogoWithMask() {
   lctx.clearRect(0, 0, W, H);
   if (!logoImg) return;
-  const sz = +ss.value / 100, xp = +xs.value / 100;
-  const yp = +ys.value / 100, op = +os.value / 100;
-  const md = W * sz;
-  const sc = Math.min(md / logoImg.naturalWidth, md / logoImg.naturalHeight);
-  const dw = logoImg.naturalWidth * sc, dh = logoImg.naturalHeight * sc;
+  const rect = logoRect();
+  const op = +os.value / 100;
   lctx.save(); lctx.globalAlpha = op;
-  lctx.drawImage(logoImg, xp * W - dw / 2, yp * H - dh / 2, dw, dh);
+  lctx.drawImage(logoImg, rect.x, rect.y, rect.w, rect.h);
   lctx.restore();
-  // Knock out erased areas
   replayMask();
   lctx.save();
   lctx.globalCompositeOperation = 'destination-out';
@@ -479,36 +499,41 @@ function draw() {
   if (logoImg) { drawLogoWithMask(); ctx.drawImage(logoCanvas, 0, 0); }
 }
 
-// ── Undo / Redo helpers ──
+// ── Undo / Redo ──
 function updateUndoRedo() {
   document.getElementById('undo-btn').disabled = undoStack.length === 0;
   document.getElementById('redo-btn').disabled = redoStack.length === 0;
 }
-
 function snapshotForUndo() {
-  undoStack.push(strokes.map(s => ({ radius: s.radius, points: [...s.points] })));
+  undoStack.push(strokes.map(s => ({ r: s.r, points: [...s.points] })));
   redoStack = [];
   updateUndoRedo();
 }
 
-// ── Stroke lifecycle ──
+// ── Stroke lifecycle (all in logo-local space) ──
 function startStroke(cx, cy) {
+  const local = canvasToLogoLocal(cx, cy);
+  if (!local) return;
   snapshotForUndo();
-  liveStroke = { radius: eraserRadius(), points: [{ x: cx / W, y: cy / H }] };
+  const rect = logoRect();
+  const rFrac = eraserRadius() / rect.w; // brush radius as fraction of logo width
+  liveStroke = { r: rFrac, points: [local] };
   draw();
 }
 
 function continueStroke(cx, cy) {
   if (!liveStroke) return;
+  const rect = logoRect();
+  if (!rect) return;
   const dx = cx - lastEX, dy = cy - lastEY;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  const r    = liveStroke.radius;
-  const steps = Math.max(1, Math.floor(dist / (r * 0.25)));
+  const rPx  = liveStroke.r * rect.w;
+  const steps = Math.max(1, Math.floor(dist / (rPx * 0.25)));
   for (let i = 1; i <= steps; i++) {
-    liveStroke.points.push({
-      x: (lastEX + dx * (i / steps)) / W,
-      y: (lastEY + dy * (i / steps)) / H
-    });
+    const ix = lastEX + dx * (i / steps);
+    const iy = lastEY + dy * (i / steps);
+    const local = canvasToLogoLocal(ix, iy);
+    if (local) liveStroke.points.push(local);
   }
   draw();
 }
@@ -574,30 +599,26 @@ document.getElementById('erase-btn').addEventListener('click', () => {
   if (!eraserActive) eoctx.clearRect(0, 0, W, H);
 });
 
-// ── Brush size label ──
 document.getElementById('esize').addEventListener('input', function () {
   document.getElementById('esv').textContent = this.value + 'px';
 });
 
-// ── Undo ──
 document.getElementById('undo-btn').addEventListener('click', () => {
   if (!undoStack.length) return;
-  redoStack.push(strokes.map(s => ({ radius: s.radius, points: [...s.points] })));
+  redoStack.push(strokes.map(s => ({ r: s.r, points: [...s.points] })));
   strokes = undoStack.pop();
   liveStroke = null;
   draw(); updateUndoRedo();
 });
 
-// ── Redo ──
 document.getElementById('redo-btn').addEventListener('click', () => {
   if (!redoStack.length) return;
-  undoStack.push(strokes.map(s => ({ radius: s.radius, points: [...s.points] })));
+  undoStack.push(strokes.map(s => ({ r: s.r, points: [...s.points] })));
   strokes = redoStack.pop();
   liveStroke = null;
   draw(); updateUndoRedo();
 });
 
-// ── Clear all erases ──
 document.getElementById('clear-erase-btn').addEventListener('click', () => {
   snapshotForUndo();
   strokes = []; liveStroke = null;
@@ -605,7 +626,6 @@ document.getElementById('clear-erase-btn').addEventListener('click', () => {
   draw(); updateUndoRedo();
 });
 
-// ── Keyboard shortcuts ──
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); document.getElementById('undo-btn').click(); }
   if (e.ctrlKey && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); document.getElementById('redo-btn').click(); }
