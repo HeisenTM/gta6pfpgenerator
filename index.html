@@ -497,6 +497,16 @@ input[type=range]::-moz-range-thumb{
         </div>
         <div id="ai-rmbg-label" style="font-size:10px;color:rgba(255,255,255,.4);margin-top:4px;text-align:center">Loading AI model…</div>
       </div>
+
+      <!-- Shift Edge slider — shown after any BG removal -->
+      <div id="shift-edge-wrap" style="display:none;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,.03);border:1px solid var(--glass-b-strong);border-radius:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+          <span style="font-size:11px;font-weight:600;color:var(--ink-2)">Shift Edge</span>
+          <span id="shift-edge-val" style="font-size:11px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums;min-width:36px;text-align:right">0</span>
+        </div>
+        <input type="range" id="shift-edge-slider" min="-20" max="0" value="0"/>
+        <div style="font-size:10px;color:var(--ink-3);margin-top:6px;text-align:center">Drag left to shrink edges &amp; remove halos</div>
+      </div>
     </div>
 
     <div class="divider"></div>
@@ -512,6 +522,17 @@ input[type=range]::-moz-range-thumb{
       </div>
       <br/>
       <button class="btn-centre" id="cb" disabled><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg> Centre Logo</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Background Blur -->
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <p class="lbl" style="margin-bottom:0">Background Blur</p>
+        <span id="blur-val" style="font-size:11px;font-weight:700;color:var(--ink-0);font-variant-numeric:tabular-nums">0</span>
+      </div>
+      <input type="range" id="blur-slider" min="0" max="40" value="0"/>
     </div>
 
     <div class="divider"></div>
@@ -659,7 +680,10 @@ const BUILTIN_BGS = {
 };
 
 // ── Background loader ──
+let _bgObjUrl = null; // track custom bg blob URL for cleanup
 function loadBg(src){
+  // Revoke previous custom blob URL to free memory
+  if(_bgObjUrl){ URL.revokeObjectURL(_bgObjUrl); _bgObjUrl=null; }
   const img=new Image();
   img.onload=()=>{bgImg=img;draw();};
   img.src=src;
@@ -691,19 +715,24 @@ function renderBgGrid(){
   up.className='bg-swatch bg-upload-swatch'+(customBgDataUrl?' active':'');
   if(customBgDataUrl){
     up.style.backgroundImage=`url(${customBgDataUrl})`;
-    up.innerHTML=`<span class="bg-swatch-label">Custom</span>`;
+    up.innerHTML=`<span class="bg-swatch-label" style="pointer-events:none">Custom</span>`;
   } else {
-    up.innerHTML=`<span class="plus-mini">+</span><span>Custom BG</span>`;
+    up.innerHTML=`<span class="plus-mini" style="pointer-events:none">+</span><span style="pointer-events:none">Custom BG</span>`;
   }
   const upInput=document.createElement('input');
   upInput.type='file';upInput.accept='image/*';
+  upInput.style.cssText='position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;z-index:10;';
   upInput.addEventListener('change',e=>{
     const file=e.target.files[0];
     if(!file) return;
     const reader=new FileReader();
     reader.onload=ev=>{
-      customBgDataUrl=ev.target.result;
-      loadBg(customBgDataUrl);
+      // Revoke old custom blob if exists
+      if(_bgObjUrl){ URL.revokeObjectURL(_bgObjUrl); _bgObjUrl=null; }
+      const bgBlob=new Blob([file],{type:file.type});
+      _bgObjUrl=URL.createObjectURL(bgBlob);
+      customBgDataUrl=_bgObjUrl;
+      loadBg(_bgObjUrl);
       renderBgGrid();
       toast('Custom background applied ✓');
     };
@@ -818,30 +847,40 @@ function drawLogoWithMask() {
   lctx.globalAlpha = op;
   // Apply glow if active
   if (glowIntensity > 0) {
-    // Convert hex + opacity to rgba for shadowColor
-    const r = parseInt(glowColor.slice(1,3),16);
-    const g = parseInt(glowColor.slice(3,5),16);
-    const b = parseInt(glowColor.slice(5,7),16);
     lctx.shadowBlur  = glowIntensity * 2;
-    lctx.shadowColor = `rgba(${r},${g},${b},${glowOpacity})`;
+    lctx.shadowColor = _glowRgba; // use cached value
   }
   lctx.drawImage(logoImg, rect.x, rect.y, rect.w, rect.h);
   if (glowIntensity > 0) {
     lctx.drawImage(logoImg, rect.x, rect.y, rect.w, rect.h);
   }
   lctx.restore();
-  replayMask();
-  lctx.save();
-  lctx.globalCompositeOperation = 'destination-out';
-  lctx.drawImage(maskCanvas, 0, 0);
-  lctx.restore();
+  if (strokes.length > 0 || liveStroke) {
+    replayMask();
+    lctx.save();
+    lctx.globalCompositeOperation = 'destination-out';
+    lctx.drawImage(maskCanvas, 0, 0);
+    lctx.restore();
+  }
 }
 
 function draw() {
+  const blurPx = +blurSlider.value;
   if (bgImg) {
     const bw = bgImg.naturalWidth, bh = bgImg.naturalHeight;
     const sc = Math.max(W / bw, H / bh);
-    ctx.drawImage(bgImg, (W - bw * sc) / 2, (H - bh * sc) / 2, bw * sc, bh * sc);
+    const dx = (W - bw*sc)/2, dy = (H - bh*sc)/2;
+    if (blurPx > 0) {
+      // Draw slightly oversized so blur doesn't show transparent edges
+      const spread = blurPx * 2;
+      ctx.save();
+      ctx.filter = `blur(${blurPx}px)`;
+      ctx.drawImage(bgImg, dx - spread, dy - spread, bw*sc + spread*2, bh*sc + spread*2);
+      ctx.filter = 'none';
+      ctx.restore();
+    } else {
+      ctx.drawImage(bgImg, dx, dy, bw*sc, bh*sc);
+    }
   } else {
     const g = ctx.createLinearGradient(0, 0, W, H);
     g.addColorStop(0, '#3a3cd6'); g.addColorStop(.5, '#8b2fc9'); g.addColorStop(1, '#e8176f');
@@ -1019,7 +1058,7 @@ bgrToggle.addEventListener('change',()=>{
   const on=bgrToggle.checked;
   bgrTrack.style.background=on?'#ff2e84':'rgba(255,255,255,.15)';
   bgrThumb.style.transform=on?'translateX(16px)':'translateX(0)';
-  if(logoImg) applyAndDraw();
+  if(on){ applyAndDraw(); showShiftEdge(null); } else { resetShiftEdge(); if(logoImg) applyAndDraw(); }
 });
 
 let rawLogoImg=null; // always keep original
@@ -1036,6 +1075,12 @@ function load(file){
   const img=new Image();
   img.onload=()=>{
     rawLogoImg=img;
+    // Clear all erase history so previous erases don't carry over
+    strokes=[]; liveStroke=null; undoStack=[]; redoStack=[];
+    lctx.clearRect(0,0,W,H); mctx.clearRect(0,0,W,H);
+    updateUndoRedo();
+    resetShiftEdge();
+    bgRemovedImg=null;
     applyAndDraw();
     document.getElementById('eb').disabled=false;
     document.getElementById('cb').disabled=false;
@@ -1137,12 +1182,19 @@ function removeBg(srcImg){
 function applyAndDraw(){
   if(!rawLogoImg) return;
   if(bgrToggle.checked){
-    // Show spinner on the canvas briefly
     const processed=removeBg(rawLogoImg);
-    if(processed.complete&&processed.naturalWidth){logoImg=processed;draw();}
-    else processed.onload=()=>{logoImg=processed;draw();};
+    const onReady = () => {
+      bgRemovedImg = processed; // always update source of truth
+      logoImg = processed;
+      // Re-apply shift edge if active
+      if(shiftEdgeVal !== 0) { applyShiftEdge(); } else { draw(); }
+    };
+    if(processed.complete&&processed.naturalWidth) onReady();
+    else processed.onload = onReady;
   } else {
-    logoImg=rawLogoImg;draw();
+    bgRemovedImg = null;
+    logoImg=rawLogoImg;
+    draw();
   }
 }
 
@@ -1201,6 +1253,8 @@ document.getElementById('rb').addEventListener('click',()=>{
   bgrToggle.checked=false;
   bgrTrack.style.background='rgba(255,255,255,.15)';
   bgrThumb.style.transform='translateX(0)';
+  blurSlider.value=0; blurValEl.textContent='0';
+  resetShiftEdge();
   resetGlow();
   draw();
 });
@@ -1388,7 +1442,9 @@ aiBtn.addEventListener('click', () => {
         strokes = []; liveStroke = null; undoStack = []; redoStack = [];
         lctx.clearRect(0, 0, W, H); mctx.clearRect(0, 0, W, H);
         updateUndoRedo();
+        bgRemovedImg = outImg;
         draw();
+        showShiftEdge(outImg);
         setAiBtnState('done');
         toast('AI background removed ✓');
         URL.revokeObjectURL(blobUrl);
@@ -1415,17 +1471,141 @@ aiBtn.addEventListener('click', () => {
 document.getElementById('guide-open-btn').addEventListener('click', openMenu);
 
 
+
+
+// ── Shift Edge ──
+// Architecture: we keep "bgRemovedImg" — the output of BG removal (solid or AI).
+// shiftEdge is applied on top of bgRemovedImg, result stored in logoImg.
+// Slider always re-derives from bgRemovedImg so nothing is lost.
+// Algorithm: two-pass row/col distance transform (O(w*h)) — very fast.
+
+let shiftEdgeVal = 0;
+let bgRemovedImg  = null; // source of truth after BG removal
+
+const shiftEdgeSlider = document.getElementById('shift-edge-slider');
+const shiftEdgeValEl  = document.getElementById('shift-edge-val');
+const shiftEdgeWrap   = document.getElementById('shift-edge-wrap');
+
+let _shiftDebounce = null;
+shiftEdgeSlider.addEventListener('input', () => {
+  shiftEdgeVal = +shiftEdgeSlider.value;
+  shiftEdgeValEl.textContent = (shiftEdgeVal > 0 ? '+' : '') + shiftEdgeVal;
+  clearTimeout(_shiftDebounce);
+  _shiftDebounce = setTimeout(applyShiftEdge, 120);
+});
+
+// Fast shift edge using two-pass distance transform
+function applyShiftEdge() {
+  const src = bgRemovedImg || logoImg;
+  if (!src) return;
+
+  if (shiftEdgeVal === 0) {
+    logoImg = src;
+    draw();
+    return;
+  }
+
+  const oc  = document.createElement('canvas');
+  oc.width  = src.naturalWidth;
+  oc.height = src.naturalHeight;
+  const ox  = oc.getContext('2d');
+  ox.drawImage(src, 0, 0);
+
+  const id  = ox.getImageData(0, 0, oc.width, oc.height);
+  const d   = id.data;
+  const W2  = oc.width, H2 = oc.height;
+  const N   = W2 * H2;
+  const INF = 999999;
+  const radius = Math.abs(shiftEdgeVal);
+  const shrink = shiftEdgeVal < 0;
+
+  // Build binary alpha mask: 1 = opaque, 0 = transparent
+  // Then compute distance transform from the boundary
+  const dist = new Float32Array(N);
+
+  if (shrink) {
+    // Distance from each opaque pixel to nearest transparent pixel
+    // Init: transparent = 0, opaque = INF
+    for (let i = 0; i < N; i++) dist[i] = d[i*4+3] > 127 ? INF : 0;
+  } else {
+    // Distance from each transparent pixel to nearest opaque pixel
+    // Init: opaque = 0, transparent = INF
+    for (let i = 0; i < N; i++) dist[i] = d[i*4+3] > 127 ? 0 : INF;
+  }
+
+  // Two-pass Manhattan distance transform (fast, good enough for edge shifting)
+  // Pass 1: top-left to bottom-right
+  for (let y = 0; y < H2; y++) {
+    for (let x = 0; x < W2; x++) {
+      const i = y*W2+x;
+      if (x > 0 && dist[i-1]+1 < dist[i]) dist[i] = dist[i-1]+1;
+      if (y > 0 && dist[i-W2]+1 < dist[i]) dist[i] = dist[i-W2]+1;
+    }
+  }
+  // Pass 2: bottom-right to top-left
+  for (let y = H2-1; y >= 0; y--) {
+    for (let x = W2-1; x >= 0; x--) {
+      const i = y*W2+x;
+      if (x < W2-1 && dist[i+1]+1 < dist[i]) dist[i] = dist[i+1]+1;
+      if (y < H2-1 && dist[i+W2]+1 < dist[i]) dist[i] = dist[i+W2]+1;
+    }
+  }
+
+  // Apply: hard cut — pixels within radius of edge become fully transparent
+  for (let i = 0; i < N; i++) {
+    if (shrink && dist[i] < radius) {
+      d[i*4+3] = 0; // hard transparent cut, no feathering
+    }
+  }
+
+  ox.putImageData(id, 0, 0);
+  const out = new Image();
+  out.onload = () => { logoImg = out; draw(); };
+  out.src = oc.toDataURL('image/png');
+}
+
+function showShiftEdge(src) {
+  if(src) bgRemovedImg = src; // only update if provided
+  shiftEdgeWrap.style.display = 'block';
+  // Only reset slider when explicitly showing for first time
+  if(src !== undefined && src !== null) {
+    shiftEdgeVal = 0;
+    shiftEdgeSlider.value = 0;
+    shiftEdgeValEl.textContent = '0';
+  }
+}
+
+function resetShiftEdge() {
+  shiftEdgeVal = 0;
+  bgRemovedImg  = null;
+  shiftEdgeSlider.value = 0;
+  shiftEdgeValEl.textContent = '0';
+  shiftEdgeWrap.style.display = 'none';
+}
+
+// ── Background Blur ──
+const blurSlider = document.getElementById('blur-slider');
+const blurValEl  = document.getElementById('blur-val');
+let _blurDebounce = null;
+blurSlider.addEventListener('input', () => {
+  blurValEl.textContent = blurSlider.value;
+  clearTimeout(_blurDebounce);
+  _blurDebounce = setTimeout(draw, 30);
+});
+
 // ── Glow ──
 let glowIntensity = 0;
 let glowColor = '#ff2e84';
 let glowOpacity = 1.0;
+let _glowRgba = 'rgba(255,46,132,1)'; // cached, recomputed only on color/opacity change
 
 const glowBtn    = document.getElementById('glow-btn');
 const glowPanel  = document.getElementById('glow-panel');
 const glowSlider = document.getElementById('glow-slider');
 const glowValEl  = document.getElementById('glow-val');
 
-let glowPanelOpen = false;
+_glowRgba = 'rgba(255,46,132,1)';
+  glowPanelOpen = false;
 
 glowBtn.addEventListener('click', () => {
   glowPanelOpen = !glowPanelOpen;
@@ -1435,10 +1615,12 @@ glowBtn.addEventListener('click', () => {
   glowBtn.style.color       = glowPanelOpen ? '#fff' : '';
 });
 
+let _glowDebounce = null;
 glowSlider.addEventListener('input', () => {
   glowIntensity = +glowSlider.value;
   glowValEl.textContent = glowIntensity;
-  draw();
+  clearTimeout(_glowDebounce);
+  _glowDebounce = setTimeout(draw, 30);
 });
 
 const glowOpacitySlider = document.getElementById('glow-opacity-slider');
@@ -1446,6 +1628,8 @@ const glowOpacityVal    = document.getElementById('glow-opacity-val');
 glowOpacitySlider.addEventListener('input', () => {
   glowOpacity = glowOpacitySlider.value / 100;
   glowOpacityVal.textContent = glowOpacitySlider.value + '%';
+  const _ro=parseInt(glowColor.slice(1,3),16),_go=parseInt(glowColor.slice(3,5),16),_bo=parseInt(glowColor.slice(5,7),16);
+  _glowRgba=`rgba(${_ro},${_go},${_bo},${glowOpacity})`;
   draw();
 });
 
@@ -1462,11 +1646,12 @@ document.getElementById('glow-colors').addEventListener('click', e => {
 
 document.getElementById('glow-custom-color').addEventListener('input', e => {
   glowColor = e.target.value;
-  // Deselect preset swatches, highlight custom picker
   document.querySelectorAll('.glow-color-btn').forEach(b => b.classList.remove('active'));
   const label = document.getElementById('glow-custom-label');
   label.style.background = glowColor;
   label.style.borderColor = '#fff';
+  const _rcc=parseInt(glowColor.slice(1,3),16),_gcc=parseInt(glowColor.slice(3,5),16),_bcc=parseInt(glowColor.slice(5,7),16);
+  _glowRgba=`rgba(${_rcc},${_gcc},${_bcc},${glowOpacity})`;
   draw();
 });
 
@@ -1481,6 +1666,7 @@ function resetGlow() {
   glowSlider.value = 0; glowValEl.textContent = '0';
   glowOpacity = 1.0;
   if(document.getElementById('glow-opacity-slider')){document.getElementById('glow-opacity-slider').value=100;document.getElementById('glow-opacity-val').textContent='100%';}
+  _glowRgba = 'rgba(255,46,132,1)';
   glowPanelOpen = false;
   glowPanel.style.display = 'none';
   glowBtn.style.borderColor = '';
