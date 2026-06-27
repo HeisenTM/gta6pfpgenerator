@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover"/>
 <title>GTAVI PFP Generator</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <script type="module" src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.2/dist/transformers.min.js" id="tfjs-cdn"></script>
@@ -68,7 +68,70 @@ header{text-align:center;margin-bottom:4px;padding-right:52px;padding-left:52px}
   -webkit-mask-composite:xor;mask-composite:exclude;
   pointer-events:none;
 }
-@media(max-width:620px){.card{grid-template-columns:1fr;padding:18px}.preview-panel{position:static;order:-1;}.tips-strip,.guide-open-btn{order:0;}}
+@media(max-width:620px){
+  /* Card */
+  .card{grid-template-columns:1fr;padding:14px;gap:14px;border-radius:16px}
+
+  /* Preview always on top */
+  .preview-panel{position:static;order:-1;}
+  .canvas-wrap{border-radius:12px}
+
+  /* Tips: horizontal scroll row instead of tall column */
+  .tips-strip{flex-direction:row;overflow-x:auto;gap:8px;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none;margin-top:8px}
+  .tips-strip::-webkit-scrollbar{display:none}
+  .tip-chip{min-width:140px;flex-shrink:0;font-size:10.5px}
+  .tips-strip,.guide-open-btn{order:0}
+
+  /* Guide button */
+  .guide-open-btn{font-size:11px;padding:7px 14px}
+
+  /* Bigger slider thumbs for touch */
+  input[type=range]::-webkit-slider-thumb{width:22px;height:22px}
+  input[type=range]{height:4px}
+
+  /* Section labels */
+  .lbl{font-size:9px;letter-spacing:.14em}
+
+  /* Upload zone - more compact */
+  .upload-zone{padding:16px 12px}
+  .plus-icon{width:36px;height:36px;margin-bottom:7px}
+
+  /* Buttons - taller touch targets */
+  .btn{padding:13px 14px;font-size:13px}
+  .btn-centre,.btn-erase,.btn-ghost,.guide-open-btn{min-height:44px}
+  .ico-btn{width:38px;height:38px;font-size:16px}
+
+  /* Format pills */
+  .fp{padding:11px}
+
+  /* BG grid - 2 cols on mobile so swatches are bigger */
+  .bg-picker-grid{grid-template-columns:repeat(2,1fr);gap:8px}
+  .bg-picker-grid .bg-upload-swatch{grid-column:1/-1;height:48px}
+
+  /* Glow color swatches - bigger */
+  .glow-color-btn{width:28px;height:28px}
+
+  /* Slider row labels */
+  .sr label{font-size:13px}
+  .sr label span{font-size:13px}
+
+  /* Divider spacing */
+  .controls{gap:14px}
+
+  /* Dev credit */
+  .dev-credit{margin:5px 0 16px;font-size:11px}
+
+  /* More bg notice */
+  .more-bg-notice{font-size:10px;margin-top:10px}
+}
+
+/* Extra small screens */
+@media(max-width:380px){
+  .card{padding:10px;gap:10px}
+  .bg-picker-grid{grid-template-columns:repeat(2,1fr)}
+  .tip-chip{min-width:120px}
+  h1{font-size:1.6rem}
+}
 
 /* ── Controls ── */
 .controls{transition:opacity .2s;display:flex;flex-direction:column;gap:18px}
@@ -109,9 +172,10 @@ header{text-align:center;margin-bottom:4px;padding-right:52px;padding-left:52px}
 input[type=range]{
   -webkit-appearance:none;width:100%;height:3px;
   border-radius:2px;background:rgba(255,255,255,.10);outline:none;cursor:pointer;
+  touch-action:pan-x;
 }
 input[type=range]::-webkit-slider-thumb{
-  -webkit-appearance:none;width:15px;height:15px;border-radius:50%;
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
   background:var(--ink-0);box-shadow:0 0 0 3px rgba(255,46,132,.18);cursor:pointer;
   transition:box-shadow .15s;
 }
@@ -643,7 +707,7 @@ input[type=range]::-moz-range-thumb{
           <label>Size <strong id="esv" style="color:#fff">30px</strong></label>
           <input type="range" id="esize" min="5" max="120" value="30" style="flex:1"/>
         </div>
-        <p class="eraser-hint">Draw on the preview to erase · Ctrl+Z / Ctrl+Y also work</p>
+        <p class="eraser-hint">Draw on preview to erase · Ctrl+Z / Ctrl+Y</p>
       </div>
     </div>
 
