@@ -48,6 +48,7 @@ header{text-align:center;margin-bottom:4px;padding-right:52px;padding-left:52px}
 
 /* ── Card: liquid glass ── */
 .card{
+  -webkit-overflow-scrolling:touch;
   position:relative;
   background:
     linear-gradient(155deg, rgba(255,255,255,.05), rgba(255,255,255,.015) 40%, rgba(255,255,255,.03)),
@@ -428,6 +429,42 @@ input[type=range]::-moz-range-thumb{
 }
 .glow-color-btn:hover{transform:scale(1.15)}
 .glow-color-btn.active{border-color:#fff;transform:scale(1.15)}
+
+/* ── Mobile accordions ── */
+.mob-section{border:1px solid var(--glass-b);border-radius:12px;overflow:hidden}
+.mob-section-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 14px;cursor:pointer;user-select:none;
+  background:rgba(255,255,255,.03);
+}
+.mob-section-header .lbl{margin-bottom:0;font-size:10px}
+.mob-section-chevron{font-size:10px;color:var(--ink-3);transition:transform .2s;flex-shrink:0}
+.mob-section-chevron.open{transform:rotate(180deg)}
+.mob-section-body{display:none;padding:14px;border-top:1px solid var(--glass-b)}
+.mob-section-body.open{display:block}
+
+/* Scroll to preview FAB */
+.scroll-to-preview-btn{
+  display:none;
+  position:fixed;bottom:20px;right:16px;z-index:130;
+  width:44px;height:44px;border-radius:50%;
+  background:var(--accent);border:none;cursor:pointer;
+  align-items:center;justify-content:center;
+  box-shadow:0 4px 16px rgba(255,46,132,.4);
+  transition:opacity .2s,transform .2s;
+}
+.scroll-to-preview-btn svg{pointer-events:none}
+
+@media(max-width:620px){
+  /* Hide normal dividers inside sections on mobile — accordion handles separation */
+  .mob-section .divider{display:none}
+  /* Larger filename input for mobile */
+  #export-filename{font-size:16px;padding:11px 12px} /* 16px prevents iOS zoom */
+  /* Scroll to preview FAB visible on mobile */
+  .scroll-to-preview-btn{display:flex}
+  /* Make glow/shadow panels full width on mobile */
+  #glow-panel,#shadow-panel{border-radius:10px}
+}
 </style>
 </head>
 <body>
@@ -1627,6 +1664,97 @@ aiBtn.addEventListener('click', () => {
 
   worker.postMessage({ dataUrl });
 });
+
+
+
+// ── Mobile accordions (only on narrow screens) ──
+function initMobileAccordions() {
+  if (window.innerWidth > 620) return;
+
+  // Find all .controls children that are direct section divs (not dividers)
+  const controls = document.querySelector('.controls');
+  if (!controls || controls.dataset.accordioned) return;
+  controls.dataset.accordioned = '1';
+
+  // Section config: label, icon, default open
+  const sectionDefs = [
+    { label: 'Background',          open: true  },
+    { label: '1 — Upload Your Subject / Logo', open: true  },
+    { label: '2 — Position & Size', open: false },
+    { label: '3 — Erase / Touch Up',open: false },
+    { label: '4 — Export',          open: false },
+  ];
+
+  // Get direct children (skip dividers)
+  const children = Array.from(controls.children);
+  let sectionIdx = 0;
+
+  children.forEach(child => {
+    // Skip dividers
+    if (child.classList.contains('divider')) {
+      child.style.display = 'none';
+      return;
+    }
+    const lbl = child.querySelector('.lbl');
+    if (!lbl || sectionIdx >= sectionDefs.length) return;
+
+    const def = sectionDefs[sectionIdx++];
+    const isOpen = def.open;
+
+    // Wrap in accordion
+    const wrapper = document.createElement('div');
+    wrapper.className = 'mob-section';
+
+    const header = document.createElement('div');
+    header.className = 'mob-section-header';
+    header.innerHTML = `<span class="lbl" style="margin-bottom:0">${lbl.textContent}</span><span class="mob-section-chevron ${isOpen?'open':''}">▼</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'mob-section-body' + (isOpen ? ' open' : '');
+
+    // Move child content (minus the lbl) into body
+    lbl.remove();
+    while (child.firstChild) body.appendChild(child.firstChild);
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(body);
+
+    // Replace child with wrapper
+    controls.replaceChild(wrapper, child);
+
+    header.addEventListener('click', () => {
+      const open = body.classList.toggle('open');
+      header.querySelector('.mob-section-chevron').classList.toggle('open', open);
+    });
+  });
+}
+
+// Run on load and on resize
+initMobileAccordions();
+window.addEventListener('resize', () => {
+  // Only init if newly mobile
+  const controls = document.querySelector('.controls');
+  if (controls) delete controls.dataset.accordioned;
+  initMobileAccordions();
+});
+
+// ── Scroll to preview FAB ──
+const scrollFab = document.createElement('button');
+scrollFab.className = 'scroll-to-preview-btn';
+scrollFab.title = 'Back to preview';
+scrollFab.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>';
+scrollFab.addEventListener('click', () => {
+  document.getElementById('canvas-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+document.body.appendChild(scrollFab);
+
+// Show FAB only after user scrolls past preview
+window.addEventListener('scroll', () => {
+  if (window.innerWidth > 620) return;
+  const canvasRect = document.getElementById('canvas-wrap').getBoundingClientRect();
+  scrollFab.style.opacity = canvasRect.bottom < 0 ? '1' : '0';
+  scrollFab.style.pointerEvents = canvasRect.bottom < 0 ? 'auto' : 'none';
+}, { passive: true });
 
 
 // ── Guide button → opens hamburger menu ──
